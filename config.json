@@ -1,0 +1,4 @@
+{
+    "request": "Python",
+    "blacklisted_words": ["AI", "ML", "Data Scientist", "Data Engineer", "DevOps", "Machine Learning", "Data Analyst", "QA", "Malware", "LLM"]
+}
