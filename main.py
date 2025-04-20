@@ -146,8 +146,13 @@ async def process_vacancy(vacancy, accounts, ignored_account_ids, account_lock, 
             
 
 async def main():
-    words_blacklist = ['AI', 'ML', 'Data Scientist', 'Data Engineer', 'DevOps', 'Machine Learning',
-                       'Data Analyst', 'QA', 'Malware', 'LLM']
+    
+    try:
+        words_blacklist = [word.strip() for word in open('words_blacklist.txt', 'r').readlines()]
+    except FileNotFoundError:
+        words_blacklist = []
+    
+    print('Words Blacklist:', words_blacklist)
 
     with open('accounts.json', 'r') as f:
         accounts_data = json.load(f)
