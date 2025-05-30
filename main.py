@@ -133,6 +133,72 @@ class AccountResumePair:
         self.pair_id = pair_id
         self.is_exhausted = False
 
+def display_accounts_info(accounts: List[Account]) -> None:
+    """Отображает информацию об аккаунтах и их резюме."""
+    print("\n=== ИНФОРМАЦИЯ ОБ АККАУНТАХ ===")
+    for i, account in enumerate(accounts, 1):
+        print(f"\nАккаунт {i}: {account.email}")
+        for j, resume in enumerate(account.resumes, 1):
+            blacklist_info = f" (исключения: {', '.join(resume.blacklist)})" if resume.blacklist else ""
+            print(f"  Резюме {j}: {resume.query}{blacklist_info}")
+
+def get_search_order_from_user(all_search_queries: List[str]) -> List[str]:
+    """Запрашивает у пользователя порядок обработки поисковых запросов."""
+    print("\n=== ВЫБОР ПОРЯДКА ОТКЛИКА НА ВАКАНСИИ ===")
+    print("Доступные поисковые запросы:")
+    
+    for i, query in enumerate(all_search_queries, 1):
+        print(f"{i}. {query}")
+    
+    print("\nВыберите порядок обработки запросов для максимально эффективного")
+    print("использования лимита в 200 откликов на каждый аккаунт.")
+    print("Введите номера через пробел в нужном порядке (например: 2 1 3)")
+    print("Или нажмите Enter для автоматического порядка")
+    
+    while True:
+        user_input = input("\nВаш выбор: ").strip()
+        
+        if not user_input:
+            # Если пользователь не выбрал порядок, возвращаем исходный список
+            print("Используется автоматический порядок")
+            return all_search_queries
+        
+        try:
+            # Парсим ввод пользователя
+            selected_indices = [int(x) - 1 for x in user_input.split()]
+            
+            # Проверяем корректность введенных номеров
+            if len(selected_indices) != len(all_search_queries):
+                print(f"Ошибка: Нужно указать {len(all_search_queries)} номеров")
+                continue
+                
+            if any(i < 0 or i >= len(all_search_queries) for i in selected_indices):
+                print(f"Ошибка: Номера должны быть от 1 до {len(all_search_queries)}")
+                continue
+                
+            if len(set(selected_indices)) != len(selected_indices):
+                print("Ошибка: Номера не должны повторяться")
+                continue
+            
+            # Создаем упорядоченный список запросов
+            ordered_queries = [all_search_queries[i] for i in selected_indices]
+            
+            print("\nВыбранный порядок:")
+            for i, query in enumerate(ordered_queries, 1):
+                print(f"{i}. {query}")
+            
+            # Подтверждение
+            confirm = input("\nПодтвердить? (y/n): ").strip().lower()
+            if confirm in ['y', 'yes', 'да', '']:
+                return ordered_queries
+            else:
+                print("Попробуйте еще раз")
+                continue
+                
+        except ValueError:
+            print("Ошибка: Введите номера через пробел (например: 2 1 3)")
+            continue
+
 async def get_vacancies_data(session: aiohttp.ClientSession, params: str) -> Dict:
     """Получает данные о вакансиях с сайта."""
     url = f"https://hh.ru/search/vacancy?{params}"
@@ -224,13 +290,17 @@ async def process_resume_vacancies(
     pair_index: List[int]
 ) -> None:
     """Обрабатывает все вакансии для конкретного поискового запроса."""
-    print(f"Начинаем поиск вакансий для запроса: {search_query}")
+    print(f"\n=== Начинаем поиск вакансий для запроса: {search_query} ===")
     
     # Проверяем, есть ли доступные пары для данного поискового запроса
     available_pairs = [pair for pair in relevant_pairs if pair.pair_id not in exhausted_pairs]
     if not available_pairs:
         print(f"Нет доступных аккаунтов для поискового запроса: {search_query}")
         return
+    
+    print(f"Доступно аккаунтов для '{search_query}': {len(available_pairs)}")
+    for pair in available_pairs:
+        print(f"  - {pair.account.email}")
     
     last_page = await get_vacancies_pages(session, search_query)
     print(f"Найдено страниц для '{search_query}': {last_page}")
@@ -239,7 +309,7 @@ async def process_resume_vacancies(
         # Проверяем доступные пары перед каждой страницей
         available_pairs = [pair for pair in relevant_pairs if pair.pair_id not in exhausted_pairs]
         if not available_pairs:
-            print(f"Лимит всех аккаунтов для запроса '{search_query}' исчерпан.")
+            print(f"\n❌ Лимит всех аккаунтов для запроса '{search_query}' исчерпан.")
             break
             
         vacancies = await get_vacancies(session, search_query, page)
@@ -250,6 +320,8 @@ async def process_resume_vacancies(
             for vacancy in vacancies
         ]
         await asyncio.gather(*tasks)
+    
+    print(f"✅ Завершена обработка запроса: {search_query}")
 
 def cookies_to_string(cookies: Dict[str, str]) -> str:
     """Преобразует словарь кук в строку."""
@@ -303,6 +375,9 @@ async def main() -> None:
         print("Не найдено аккаунтов с резюме.")
         return
 
+    # Отображаем информацию об аккаунтах
+    display_accounts_info(accounts)
+
     # Создаем пары аккаунт-резюме
     account_resume_pairs = []
     pair_id = 0
@@ -316,7 +391,13 @@ async def main() -> None:
         print("Не найдено подходящих пар аккаунт-резюме.")
         return
 
-    print(f"Создано {len(account_resume_pairs)} пар аккаунт-резюме для {len(all_search_queries)} поисковых запросов")
+    # Получаем порядок обработки от пользователя
+    all_search_queries_list = list(all_search_queries)
+    ordered_search_queries = get_search_order_from_user(all_search_queries_list)
+
+    print(f"\n=== НАЧАЛО ОБРАБОТКИ ===")
+    print(f"Создано {len(account_resume_pairs)} пар аккаунт-резюме")
+    print(f"Порядок обработки запросов: {' → '.join(ordered_search_queries)}")
 
     exhausted_pairs: List[int] = []
     pair_lock = asyncio.Lock()
@@ -329,8 +410,8 @@ async def main() -> None:
     }
 
     async with aiohttp.ClientSession(headers=session_headers) as session:
-        # Обрабатываем вакансии для каждого уникального поискового запроса
-        for search_query in all_search_queries:
+        # Обрабатываем вакансии в выбранном пользователем порядке
+        for search_query in ordered_search_queries:
             # Находим все пары, которые соответствуют данному поисковому запросу
             relevant_pairs = [
                 pair for pair in account_resume_pairs 
@@ -354,6 +435,8 @@ async def main() -> None:
                 session, search_query, relevant_pairs, 
                 exhausted_pairs, pair_lock, pair_index
             )
+
+    print(f"\n🎉 ПРОГРАММА ЗАВЕРШЕНА!")
 
 if __name__ == "__main__":
     website_version = get_website_version()
