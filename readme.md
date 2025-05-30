@@ -31,11 +31,17 @@ pip install aiohttp asyncio json requests
         "resumes": [
             {
                 "hash": "resume_hash_1",
-                "name": "Python разработчик"
+                "search_criteria": {
+                    "query": "Python разработчик",
+                    "exclude_words": ["стажер", "практикант", "junior", "интерн"]
+                }
             },
             {
                 "hash": "resume_hash_2", 
-                "name": "Backend developer"
+                "search_criteria": {
+                    "query": "Backend developer",
+                    "exclude_words": ["стартап", "без опыта", "trainee"]
+                }
             }
         ]
     },
@@ -44,7 +50,10 @@ pip install aiohttp asyncio json requests
         "resumes": [
             {
                 "hash": "resume_hash_3",
-                "name": "Fullstack разработчик"
+                "search_criteria": {
+                    "query": "Fullstack разработчик",
+                    "exclude_words": ["фриланс", "удаленка", "remote"]
+                }
             }
         ]
     }
@@ -55,7 +64,9 @@ pip install aiohttp asyncio json requests
 - `email` - почта аккаунта (используется для идентификации и сохранения cookies)
 - `resumes` - массив резюме для данного аккаунта
   - `hash` - хеш резюме с hh.ru
-  - `name` - поисковый запрос для данного резюме (что искать на сайте)
+  - `search_criteria` - критерии поиска для данного резюме
+    - `query` - поисковый запрос (что искать на сайте)
+    - `exclude_words` - массив слов/фраз для исключения вакансий (необязательное поле)
 
 ## 3. Получение данных аккаунта
 
@@ -84,3 +95,13 @@ python main.py
 ```
 
 При первом запуске программа попросит ввести cookies для каждого аккаунта. В дальнейшем они будут загружаться автоматически.
+
+# Структура файлов
+
+```
+├── main.py              # Основной файл программы
+├── accounts.json        # Конфигурация аккаунтов и резюме
+└── cookies/            # Папка с сохраненными cookies
+    ├── account1@example.com.json
+    └── account2@example.com.json
+```

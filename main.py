@@ -14,9 +14,10 @@ COOKIES_DIR = "cookies"
 class Resume:
     """Класс для управления резюме."""
     
-    def __init__(self, hash: str, name: str):
+    def __init__(self, hash: str, query: str, blacklist: List[str] = None):
         self.hash = hash
-        self.name = name  # Поисковый запрос для данного резюме
+        self.query = query  # Поисковый запрос для данного резюме
+        self.blacklist = blacklist or []  # Список исключаемых слов/фраз
 
 class Account:
     """Класс для управления аккаунтом и отправки откликов на вакансии."""
@@ -120,7 +121,7 @@ class Account:
                 
                 success_result = {"success": data.get("success") == "true"}
                 if success_result["success"]:
-                    success_result["resume_used"] = resume.name
+                    success_result["resume_used"] = resume.query
                 return success_result
 
 class AccountResumePair:
@@ -165,6 +166,14 @@ async def get_vacancies_pages(session: aiohttp.ClientSession, request: str) -> i
     else:
         return data["vacancySearchResult"]["paging"]["lastPage"]["page"]
 
+def is_vacancy_blacklisted(vacancy_name: str, blacklist: List[str]) -> bool:
+    """Проверяет, содержит ли название вакансии исключаемые слова."""
+    if not blacklist:
+        return False
+    
+    vacancy_name_lower = vacancy_name.lower()
+    return any(word.lower() in vacancy_name_lower for word in blacklist)
+
 async def process_vacancy(
     vacancy: Dict,
     relevant_pairs: List[AccountResumePair],  # Только релевантные пары для данного поискового запроса
@@ -174,6 +183,11 @@ async def process_vacancy(
 ) -> None:
     """Обрабатывает вакансию и отправляет отклик, если это возможно."""
     name = vacancy["name"]
+    
+    # Проверяем blacklist для первой найденной пары (у всех пар одинаковый query и blacklist)
+    if relevant_pairs and is_vacancy_blacklisted(name, relevant_pairs[0].resume.blacklist):
+        print(f"Вакансия пропущена (blacklist): {name}")
+        return
 
     async with pair_lock:
         # Фильтруем только неисчерпанные пары из релевантных
@@ -190,7 +204,7 @@ async def process_vacancy(
 
     resp = await pair.account.respond_to_vacancy(vacancy["vacancyId"], pair.resume)
     if resp["success"]:
-        print(f"Отклик отправлен на вакансию: {name} (резюме: {pair.resume.name}, аккаунт: {pair.account.email})")
+        print(f"Отклик отправлен на вакансию: {name} (резюме: {pair.resume.query}, аккаунт: {pair.account.email})")
     else:
         error = resp["error"]
         if error == "negotiations-limit-exceeded":
@@ -273,13 +287,17 @@ async def main() -> None:
     
     for account_data in accounts_data:
         resumes = [
-            Resume(hash=resume["hash"], name=resume["name"]) 
+            Resume(
+                hash=resume["hash"], 
+                query=resume["search_criteria"]["query"],
+                blacklist=resume["search_criteria"].get("exclude_words", [])
+            ) 
             for resume in account_data["resumes"]
         ]
         if resumes:  # Создаем аккаунт только если есть резюме
             accounts.append(Account(email=account_data["email"], resumes=resumes))
             for resume in resumes:
-                all_search_queries.add(resume.name)
+                all_search_queries.add(resume.query)
 
     if not accounts:
         print("Не найдено аккаунтов с резюме.")
@@ -316,7 +334,7 @@ async def main() -> None:
             # Находим все пары, которые соответствуют данному поисковому запросу
             relevant_pairs = [
                 pair for pair in account_resume_pairs 
-                if pair.resume.name == search_query
+                if pair.resume.query == search_query
             ]
             
             if not relevant_pairs:
