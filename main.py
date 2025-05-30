@@ -3,40 +3,59 @@ import aiohttp
 import json
 import re
 import requests
-from typing import Dict, List, Optional
+import os
+from typing import Dict, List, Optional, Tuple
 from aiohttp import FormData
 
 # Константы
-CONFIG_FILE = "config.json"
 ACCOUNTS_FILE = "accounts.json"
+COOKIES_DIR = "cookies"
+
+class Resume:
+    """Класс для управления резюме."""
+    
+    def __init__(self, hash: str, name: str):
+        self.hash = hash
+        self.name = name  # Поисковый запрос для данного резюме
 
 class Account:
     """Класс для управления аккаунтом и отправки откликов на вакансии."""
     
-    def __init__(self, email: str, resume_hash: str, cookies: Dict[str, str] = None):
+    def __init__(self, email: str, resumes: List[Resume]):
         self.email = email
-        self.resume_hash = resume_hash
-        self.cookies = cookies or {}
+        self.resumes = resumes
+        self.cookies = {}
         self.is_token_being_updated = False
-        self.cookie_jar = aiohttp.CookieJar()
-        self.update_cookies(self.cookies)
+        self.load_cookies()
+
+    def get_cookies_file_path(self) -> str:
+        """Возвращает путь к файлу с куками для данного аккаунта."""
+        return os.path.join(COOKIES_DIR, f"{self.email}.json")
+
+    def load_cookies(self) -> None:
+        """Загружает куки из файла."""
+        cookies_file = self.get_cookies_file_path()
+        if os.path.exists(cookies_file):
+            try:
+                with open(cookies_file, "r", encoding="utf-8") as file:
+                    data = json.load(file)
+                    self.cookies = data.get("cookies", {})
+            except (json.JSONDecodeError, FileNotFoundError):
+                self.cookies = {}
 
     def update_cookies(self, cookies: Dict[str, str]) -> None:
-        """Обновляет куки в объекте и в cookie_jar."""
+        """Обновляет куки в объекте."""
         self.cookies.update(cookies)
-        self.cookie_jar.update_cookies(cookies)
 
     def save_cookies_to_file(self) -> None:
-        """Сохраняет обновленные куки в файл accounts.json."""
-        with open(ACCOUNTS_FILE, "r", encoding="utf-8") as file:
-            data = json.load(file)
+        """Сохраняет обновленные куки в файл."""
+        # Создаем папку cookies, если её нет
+        os.makedirs(COOKIES_DIR, exist_ok=True)
         
-        for account in data:
-            if account["email"] == self.email:
-                account["cookies"] = self.cookies
-                break
+        cookies_file = self.get_cookies_file_path()
+        data = {"cookies": self.cookies}
         
-        with open(ACCOUNTS_FILE, "w", encoding="utf-8") as file:
+        with open(cookies_file, "w", encoding="utf-8") as file:
             json.dump(data, file, indent=4)
 
     def prompt_cookies_update(self) -> None:
@@ -47,11 +66,11 @@ class Account:
         self.save_cookies_to_file()
         self.is_token_being_updated = False
 
-    async def respond_to_vacancy(self, vacancy_id: int) -> Dict[str, str | bool]:
-        """Отправляет отклик на вакансию и возвращает результат."""
+    async def respond_to_vacancy(self, vacancy_id: int, resume: Resume) -> Dict[str, str | bool]:
+        """Отправляет отклик на вакансию используя указанное резюме."""
         url = "https://hh.ru/applicant/vacancy_response/popup"
         payload = {
-            "resume_hash": self.resume_hash,
+            "resume_hash": resume.hash,
             "vacancy_id": str(vacancy_id),
             "lux": "true",
             "ignore_postponed": "true",
@@ -69,7 +88,7 @@ class Account:
             "Cookie": cookies_to_string(self.cookies),
         }
 
-        async with aiohttp.ClientSession(cookie_jar=self.cookie_jar) as session:
+        async with aiohttp.ClientSession() as session:
             async with session.post(url, data=form_data, headers=headers) as response:
                 text = await response.text()
                 
@@ -80,11 +99,8 @@ class Account:
                     else:
                         while self.is_token_being_updated:
                             await asyncio.sleep(5)
-                    return await self.respond_to_vacancy(vacancy_id)
+                    return await self.respond_to_vacancy(vacancy_id, resume)
                 
-                # if response.status != 200:
-                #     return {"success": False, "error": f"HTTP {response.status}"}
-
                 try:
                     data = json.loads(text)
                 except json.JSONDecodeError:
@@ -100,9 +116,21 @@ class Account:
                     else:
                         while self.is_token_being_updated:
                             await asyncio.sleep(5)
-                    return await self.respond_to_vacancy(vacancy_id)
+                    return await self.respond_to_vacancy(vacancy_id, resume)
                 
-                return {"success": data.get("success") == "true"}
+                success_result = {"success": data.get("success") == "true"}
+                if success_result["success"]:
+                    success_result["resume_used"] = resume.name
+                return success_result
+
+class AccountResumePair:
+    """Класс для представления пары аккаунт-резюме."""
+    
+    def __init__(self, account: Account, resume: Resume, pair_id: int):
+        self.account = account
+        self.resume = resume
+        self.pair_id = pair_id
+        self.is_exhausted = False
 
 async def get_vacancies_data(session: aiohttp.ClientSession, params: str) -> Dict:
     """Получает данные о вакансиях с сайта."""
@@ -131,48 +159,83 @@ async def get_vacancies_pages(session: aiohttp.ClientSession, request: str) -> i
     """Возвращает количество страниц с вакансиями."""
     params = f"text={request}&salary=&ored_clusters=true&experience=between1And3&page=1"
     data = await get_vacancies_data(session, params)
-    return data["vacancySearchResult"]["paging"]["lastPage"]["page"]
+    paging = data["vacancySearchResult"]["paging"]
+    if paging == None:
+        return 1
+    else:
+        return data["vacancySearchResult"]["paging"]["lastPage"]["page"]
 
 async def process_vacancy(
     vacancy: Dict,
-    accounts: List[Account],
-    ignored_account_ids: List[int],
-    account_lock: asyncio.Lock,
-    account_index: List[int],
-    words_blacklist: List[str]
+    relevant_pairs: List[AccountResumePair],  # Только релевантные пары для данного поискового запроса
+    exhausted_pairs: List[int],
+    pair_lock: asyncio.Lock,
+    pair_index: List[int]
 ) -> None:
     """Обрабатывает вакансию и отправляет отклик, если это возможно."""
     name = vacancy["name"]
-    if any(word in name for word in words_blacklist):
-        return
 
-    async with account_lock:
-        if len(ignored_account_ids) == len(accounts):
-            print("Лимит всех аккаунтов исчерпан.")
+    async with pair_lock:
+        # Фильтруем только неисчерпанные пары из релевантных
+        available_pairs = [pair for pair in relevant_pairs if pair.pair_id not in exhausted_pairs]
+        
+        if not available_pairs:
+            print(f"Нет доступных аккаунтов для отклика на вакансию: {name}")
             return
         
-        while account_index[0] in ignored_account_ids:
-            account_index[0] = (account_index[0] + 1) % len(accounts)
-            if len(ignored_account_ids) == len(accounts):
-                print("Лимит всех аккаунтов исчерпан.")
-                return
-        
-        account = accounts[account_index[0]]
-        curr_account_id = account_index[0]
-        account_index[0] = (account_index[0] + 1) % len(accounts)
+        # Выбираем следующую пару по круговому принципу среди доступных
+        pair = available_pairs[pair_index[0] % len(available_pairs)]
+        curr_pair_id = pair.pair_id
+        pair_index[0] = (pair_index[0] + 1) % len(available_pairs)
 
-    resp = await account.respond_to_vacancy(vacancy["vacancyId"])
+    resp = await pair.account.respond_to_vacancy(vacancy["vacancyId"], pair.resume)
     if resp["success"]:
-        print(f"Отклик отправлен на вакансию: {name}")
+        print(f"Отклик отправлен на вакансию: {name} (резюме: {pair.resume.name}, аккаунт: {pair.account.email})")
     else:
         error = resp["error"]
         if error == "negotiations-limit-exceeded":
-            print(f"Лимит откликов аккаунта {curr_account_id} исчерпан.")
-            async with account_lock:
-                if curr_account_id not in ignored_account_ids:
-                    ignored_account_ids.append(curr_account_id)
+            print(f"Лимит откликов аккаунта {pair.account.email} исчерпан.")
+            async with pair_lock:
+                if curr_pair_id not in exhausted_pairs:
+                    exhausted_pairs.append(curr_pair_id)
         elif error != "unknown":
             print(f"Не удалось откликнуться на вакансию {name}: {error}")
+
+async def process_resume_vacancies(
+    session: aiohttp.ClientSession,
+    search_query: str,
+    relevant_pairs: List[AccountResumePair],  # Только пары, релевантные для данного поискового запроса
+    exhausted_pairs: List[int],
+    pair_lock: asyncio.Lock,
+    pair_index: List[int]
+) -> None:
+    """Обрабатывает все вакансии для конкретного поискового запроса."""
+    print(f"Начинаем поиск вакансий для запроса: {search_query}")
+    
+    # Проверяем, есть ли доступные пары для данного поискового запроса
+    available_pairs = [pair for pair in relevant_pairs if pair.pair_id not in exhausted_pairs]
+    if not available_pairs:
+        print(f"Нет доступных аккаунтов для поискового запроса: {search_query}")
+        return
+    
+    last_page = await get_vacancies_pages(session, search_query)
+    print(f"Найдено страниц для '{search_query}': {last_page}")
+    
+    for page in range(0, last_page + 1):
+        # Проверяем доступные пары перед каждой страницей
+        available_pairs = [pair for pair in relevant_pairs if pair.pair_id not in exhausted_pairs]
+        if not available_pairs:
+            print(f"Лимит всех аккаунтов для запроса '{search_query}' исчерпан.")
+            break
+            
+        vacancies = await get_vacancies(session, search_query, page)
+        print(f"Обрабатываем страницу {page}/{last_page} для '{search_query}' ({len(vacancies)} вакансий)")
+        
+        tasks = [
+            process_vacancy(vacancy, relevant_pairs, exhausted_pairs, pair_lock, pair_index)
+            for vacancy in vacancies
+        ]
+        await asyncio.gather(*tasks)
 
 def cookies_to_string(cookies: Dict[str, str]) -> str:
     """Преобразует словарь кук в строку."""
@@ -198,30 +261,47 @@ def get_website_version() -> str:
 async def main() -> None:
     """Основная функция для выполнения программы."""
     try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as file:
-            config = json.load(file)
-    except FileNotFoundError:
-        print(f"Файл {CONFIG_FILE} не найден.")
-        return
-
-    words_blacklist = config["blacklisted_words"]
-    request = config["request"]
-
-    try:
         with open(ACCOUNTS_FILE, "r", encoding="utf-8") as file:
             accounts_data = json.load(file)
     except FileNotFoundError:
         print(f"Файл {ACCOUNTS_FILE} не найден.")
         return
 
-    accounts = [
-        Account(email=account["email"], resume_hash=account["hash"], cookies=account.get("cookies", {}))
-        for account in accounts_data
-    ]
+    # Создаем аккаунты и собираем все уникальные поисковые запросы
+    accounts = []
+    all_search_queries = set()
+    
+    for account_data in accounts_data:
+        resumes = [
+            Resume(hash=resume["hash"], name=resume["name"]) 
+            for resume in account_data["resumes"]
+        ]
+        if resumes:  # Создаем аккаунт только если есть резюме
+            accounts.append(Account(email=account_data["email"], resumes=resumes))
+            for resume in resumes:
+                all_search_queries.add(resume.name)
 
-    ignored_account_ids: List[int] = []
-    account_lock = asyncio.Lock()
-    account_index = [0]  # Используем список для изменения индекса
+    if not accounts:
+        print("Не найдено аккаунтов с резюме.")
+        return
+
+    # Создаем пары аккаунт-резюме
+    account_resume_pairs = []
+    pair_id = 0
+    
+    for account in accounts:
+        for resume in account.resumes:
+            account_resume_pairs.append(AccountResumePair(account, resume, pair_id))
+            pair_id += 1
+
+    if not account_resume_pairs:
+        print("Не найдено подходящих пар аккаунт-резюме.")
+        return
+
+    print(f"Создано {len(account_resume_pairs)} пар аккаунт-резюме для {len(all_search_queries)} поисковых запросов")
+
+    exhausted_pairs: List[int] = []
+    pair_lock = asyncio.Lock()
 
     session_headers = {
         "User-Agent": "Mozilla/5.0",
@@ -231,17 +311,31 @@ async def main() -> None:
     }
 
     async with aiohttp.ClientSession(headers=session_headers) as session:
-        last_page = await get_vacancies_pages(session, request)
-        for page in range(1, last_page + 1):
-            vacancies = await get_vacancies(session, request, page)
-            tasks = [
-                process_vacancy(vacancy, accounts, ignored_account_ids, account_lock, account_index, words_blacklist)
-                for vacancy in vacancies
+        # Обрабатываем вакансии для каждого уникального поискового запроса
+        for search_query in all_search_queries:
+            # Находим все пары, которые соответствуют данному поисковому запросу
+            relevant_pairs = [
+                pair for pair in account_resume_pairs 
+                if pair.resume.name == search_query
             ]
-            await asyncio.gather(*tasks)
-            if len(ignored_account_ids) == len(accounts):
-                print("Лимит всех аккаунтов исчерпан.")
-                break
+            
+            if not relevant_pairs:
+                print(f"Нет пар для поискового запроса: {search_query}")
+                continue
+                
+            # Проверяем, есть ли доступные пары
+            available_pairs = [pair for pair in relevant_pairs if pair.pair_id not in exhausted_pairs]
+            if not available_pairs:
+                print(f"Все аккаунты для запроса '{search_query}' исчерпаны.")
+                continue
+            
+            # Создаем отдельный индекс для каждого поискового запроса
+            pair_index = [0]
+            
+            await process_resume_vacancies(
+                session, search_query, relevant_pairs, 
+                exhausted_pairs, pair_lock, pair_index
+            )
 
 if __name__ == "__main__":
     website_version = get_website_version()
