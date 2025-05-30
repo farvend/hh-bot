@@ -1,2 +1,4 @@
 accounts.json
 words_blacklist.txt
+cookies
+*.bak
