@@ -10,6 +10,15 @@ from aiohttp import FormData
 # Константы
 ACCOUNTS_FILE = "accounts.json"
 COOKIES_DIR = "cookies"
+PREFERENCES_FILE = "preferences.json"
+
+# Опции опыта работы
+EXPERIENCE_OPTIONS = {
+    "1": {"label": "Нет опыта", "value": "noExperience"},
+    "2": {"label": "От 1 до 3 лет", "value": "between1And3"},
+    "3": {"label": "От 3 до 6 лет", "value": "between3And6"},
+    "4": {"label": "Более 6 лет", "value": "moreThan6"}
+}
 
 class Resume:
     """Класс для управления резюме."""
@@ -142,26 +151,147 @@ def display_accounts_info(accounts: List[Account]) -> None:
             blacklist_info = f" (исключения: {', '.join(resume.blacklist)})" if resume.blacklist else ""
             print(f"  Резюме {j}: {resume.query}{blacklist_info}")
 
+def load_preferences() -> Dict:
+    """Загружает сохраненные предпочтения пользователя."""
+    if os.path.exists(PREFERENCES_FILE):
+        try:
+            with open(PREFERENCES_FILE, "r", encoding="utf-8") as file:
+                return json.load(file)
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+def save_preferences(preferences: Dict) -> None:
+    """Сохраняет предпочтения пользователя."""
+    with open(PREFERENCES_FILE, "w", encoding="utf-8") as file:
+        json.dump(preferences, file, indent=4)
+
+def use_saved_settings() -> Dict:
+    """Проверяет наличие сохраненных настроек и предлагает их использовать."""
+    preferences = load_preferences()
+    
+    if not preferences:
+        return {"use_saved": False}
+    
+    has_experience = "experience" in preferences and preferences["experience"]
+    has_search_order = "search_order" in preferences and preferences["search_order"]
+    
+    if not (has_experience or has_search_order):
+        return {"use_saved": False}
+    
+    print("\n=== СОХРАНЕННЫЕ НАСТРОЙКИ ===")
+    
+    if has_experience:
+        experience_labels = [
+            next((opt['label'] for opt in EXPERIENCE_OPTIONS.values() if opt['value'] == exp), exp) 
+            for exp in preferences["experience"]
+        ]
+        print(f"Опыт работы: {', '.join(experience_labels)}")
+    
+    if has_search_order:
+        print("Порядок поиска: сохранен")
+    
+    print("\nИспользовать сохраненные настройки? (y/n)")
+    user_choice = input("Ваш выбор: ").strip().lower()
+    
+    if user_choice in ['y', 'yes', 'да', '']:
+        return {
+            "use_saved": True,
+            "experience": preferences.get("experience", []),
+            "search_order": preferences.get("search_order", {})
+        }
+    else:
+        return {"use_saved": False}
+
+def get_experience_from_user() -> List[str]:
+    """Запрашивает у пользователя предпочтительный опыт работы."""
+    preferences = load_preferences()
+    saved_experience = preferences.get("experience", [])
+    
+    print("\n=== ВЫБОР ОПЫТА РАБОТЫ ===")
+    print("Доступные варианты:")
+    
+    for key, option in EXPERIENCE_OPTIONS.items():
+        saved_mark = " (сохранено)" if option["value"] in saved_experience else ""
+        print(f"{key}. {option['label']}{saved_mark}")
+    
+    print("\nВыберите один или несколько вариантов через пробел (например: 1 2)")
+    if saved_experience:
+        print(f"Нажмите Enter, чтобы использовать сохраненные варианты")
+    
+    while True:
+        user_input = input("\nВаш выбор: ").strip()
+        
+        if not user_input and saved_experience:
+            # Используем сохраненный вариант
+            print(f"Используются сохраненные варианты опыта работы")
+            return saved_experience
+        
+        try:
+            # Парсим ввод пользователя
+            selected_keys = user_input.split()
+            
+            # Проверяем корректность введенных номеров
+            if not all(key in EXPERIENCE_OPTIONS for key in selected_keys):
+                print("Ошибка: Выберите варианты из предложенного списка")
+                continue
+                
+            if not selected_keys:
+                print("Ошибка: Выберите хотя бы один вариант")
+                continue
+            
+            # Получаем значения выбранных опций
+            selected_experience = [EXPERIENCE_OPTIONS[key]["value"] for key in selected_keys]
+            
+            # Спрашиваем, хочет ли пользователь сохранить выбор
+            save_choice = input("Сохранить этот выбор? (y/n): ").strip().lower()
+            if save_choice in ['y', 'yes', 'да', '']:
+                preferences["experience"] = selected_experience
+                save_preferences(preferences)
+                print("Выбор сохранен")
+            
+            return selected_experience
+            
+        except ValueError:
+            print("Ошибка: Введите номера через пробел (например: 1 2)")
+            continue
+
 def get_search_order_from_user(all_search_queries: List[str]) -> List[str]:
     """Запрашивает у пользователя порядок обработки поисковых запросов."""
+    preferences = load_preferences()
+    saved_order = preferences.get("search_order", {})
+    
     print("\n=== ВЫБОР ПОРЯДКА ОТКЛИКА НА ВАКАНСИИ ===")
     print("Доступные поисковые запросы:")
     
     for i, query in enumerate(all_search_queries, 1):
-        print(f"{i}. {query}")
+        saved_position = saved_order.get(query, -1)
+        saved_info = f" (сохранено на позиции {saved_position})" if saved_position > 0 else ""
+        print(f"{i}. {query}{saved_info}")
     
     print("\nВыберите порядок обработки запросов для максимально эффективного")
     print("использования лимита в 200 откликов на каждый аккаунт.")
     print("Введите номера через пробел в нужном порядке (например: 2 1 3)")
-    print("Или нажмите Enter для автоматического порядка")
+    
+    if saved_order and len(saved_order) == len(all_search_queries):
+        print("Или нажмите Enter для использования сохраненного порядка")
+    else:
+        print("Или нажмите Enter для автоматического порядка")
     
     while True:
         user_input = input("\nВаш выбор: ").strip()
         
         if not user_input:
-            # Если пользователь не выбрал порядок, возвращаем исходный список
-            print("Используется автоматический порядок")
-            return all_search_queries
+            # Если пользователь не выбрал порядок
+            if saved_order and len(saved_order) == len(all_search_queries):
+                # Используем сохраненный порядок
+                ordered_queries = sorted(all_search_queries, key=lambda q: saved_order.get(q, 999))
+                print("Используется сохраненный порядок")
+                return ordered_queries
+            else:
+                # Используем исходный порядок
+                print("Используется автоматический порядок")
+                return all_search_queries
         
         try:
             # Парсим ввод пользователя
@@ -190,6 +320,12 @@ def get_search_order_from_user(all_search_queries: List[str]) -> List[str]:
             # Подтверждение
             confirm = input("\nПодтвердить? (y/n): ").strip().lower()
             if confirm in ['y', 'yes', 'да', '']:
+                # Сохраняем порядок
+                new_order = {query: i+1 for i, query in enumerate(ordered_queries)}
+                preferences = load_preferences()
+                preferences["search_order"] = new_order
+                save_preferences(preferences)
+                print("Порядок сохранен")
                 return ordered_queries
             else:
                 print("Попробуйте еще раз")
@@ -216,21 +352,34 @@ async def get_vacancies_data(session: aiohttp.ClientSession, params: str) -> Dic
             raise ValueError("Не удалось извлечь данные о вакансиях из ответа")
         return json.loads(match.group(0))
 
-async def get_vacancies(session: aiohttp.ClientSession, request: str, page: int) -> List[Dict]:
+async def get_vacancies(session: aiohttp.ClientSession, request: str, page: int, experience_list: List[str]) -> List[Dict]:
     """Получает список вакансий для указанной страницы."""
-    params = f"text={request}&salary=&ored_clusters=true&experience=between1And3&page={page}"
-    data = await get_vacancies_data(session, params)
-    return data["vacancySearchResult"]["vacancies"]
+    all_vacancies = []
+    
+    for experience in experience_list:
+        params = f"text={request}&salary=&ored_clusters=true&experience={experience}&page={page}"
+        data = await get_vacancies_data(session, params)
+        all_vacancies.extend(data["vacancySearchResult"]["vacancies"])
+    
+    return all_vacancies
 
-async def get_vacancies_pages(session: aiohttp.ClientSession, request: str) -> int:
-    """Возвращает количество страниц с вакансиями."""
-    params = f"text={request}&salary=&ored_clusters=true&experience=between1And3&page=1"
-    data = await get_vacancies_data(session, params)
-    paging = data["vacancySearchResult"]["paging"]
-    if paging == None:
-        return 1
-    else:
-        return data["vacancySearchResult"]["paging"]["lastPage"]["page"]
+async def get_vacancies_pages(session: aiohttp.ClientSession, request: str, experience_list: List[str]) -> int:
+    """Возвращает максимальное количество страниц с вакансиями среди всех выбранных опытов."""
+    max_pages = 0
+    
+    for experience in experience_list:
+        params = f"text={request}&salary=&ored_clusters=true&experience={experience}&page=1"
+        data = await get_vacancies_data(session, params)
+        paging = data["vacancySearchResult"]["paging"]
+        
+        if paging is None:
+            current_pages = 1
+        else:
+            current_pages = data["vacancySearchResult"]["paging"]["lastPage"]["page"]
+        
+        max_pages = max(max_pages, current_pages)
+    
+    return max_pages
 
 def is_vacancy_blacklisted(vacancy_name: str, blacklist: List[str]) -> bool:
     """Проверяет, содержит ли название вакансии исключаемые слова."""
@@ -287,7 +436,8 @@ async def process_resume_vacancies(
     relevant_pairs: List[AccountResumePair],  # Только пары, релевантные для данного поискового запроса
     exhausted_pairs: List[int],
     pair_lock: asyncio.Lock,
-    pair_index: List[int]
+    pair_index: List[int],
+    experience_list: List[str]
 ) -> None:
     """Обрабатывает все вакансии для конкретного поискового запроса."""
     print(f"\n=== Начинаем поиск вакансий для запроса: {search_query} ===")
@@ -302,7 +452,7 @@ async def process_resume_vacancies(
     for pair in available_pairs:
         print(f"  - {pair.account.email}")
     
-    last_page = await get_vacancies_pages(session, search_query)
+    last_page = await get_vacancies_pages(session, search_query, experience_list)
     print(f"Найдено страниц для '{search_query}': {last_page}")
     
     for page in range(0, last_page + 1):
@@ -312,7 +462,7 @@ async def process_resume_vacancies(
             print(f"\n❌ Лимит всех аккаунтов для запроса '{search_query}' исчерпан.")
             break
             
-        vacancies = await get_vacancies(session, search_query, page)
+        vacancies = await get_vacancies(session, search_query, page, experience_list)
         print(f"Обрабатываем страницу {page}/{last_page} для '{search_query}' ({len(vacancies)} вакансий)")
         
         tasks = [
@@ -377,6 +527,42 @@ async def main() -> None:
 
     # Отображаем информацию об аккаунтах
     display_accounts_info(accounts)
+    
+    # Проверяем наличие сохраненных настроек
+    saved_settings = use_saved_settings()
+    all_search_queries_list = list(all_search_queries)
+
+    if saved_settings["use_saved"]:
+        # Используем сохраненные настройки
+        experience_list = saved_settings.get("experience", [])
+        
+        # Если есть сохраненный порядок поиска, применяем его
+        if saved_settings.get("search_order"):
+            ordered_search_queries = sorted(
+                all_search_queries_list, 
+                key=lambda q: saved_settings["search_order"].get(q, 999)
+            )
+        else:
+            ordered_search_queries = all_search_queries_list
+            
+        # Выводим информацию о выбранных настройках
+        experience_labels = [
+            next((opt['label'] for opt in EXPERIENCE_OPTIONS.values() if opt['value'] == exp), exp) 
+            for exp in experience_list
+        ]
+        print(f"\nВыбраны варианты опыта работы: {', '.join(experience_labels)}")
+        print(f"Используется сохраненный порядок поиска")
+    else:
+        # Запрашиваем опыт работы
+        experience_list = get_experience_from_user()
+        experience_labels = [
+            next((opt['label'] for opt in EXPERIENCE_OPTIONS.values() if opt['value'] == exp), exp) 
+            for exp in experience_list
+        ]
+        print(f"\nВыбраны варианты опыта работы: {', '.join(experience_labels)}")
+
+        # Получаем порядок обработки от пользователя
+        ordered_search_queries = get_search_order_from_user(all_search_queries_list)
 
     # Создаем пары аккаунт-резюме
     account_resume_pairs = []
@@ -390,10 +576,6 @@ async def main() -> None:
     if not account_resume_pairs:
         print("Не найдено подходящих пар аккаунт-резюме.")
         return
-
-    # Получаем порядок обработки от пользователя
-    all_search_queries_list = list(all_search_queries)
-    ordered_search_queries = get_search_order_from_user(all_search_queries_list)
 
     print(f"\n=== НАЧАЛО ОБРАБОТКИ ===")
     print(f"Создано {len(account_resume_pairs)} пар аккаунт-резюме")
@@ -433,7 +615,7 @@ async def main() -> None:
             
             await process_resume_vacancies(
                 session, search_query, relevant_pairs, 
-                exhausted_pairs, pair_lock, pair_index
+                exhausted_pairs, pair_lock, pair_index, experience_list
             )
 
     print(f"\n🎉 ПРОГРАММА ЗАВЕРШЕНА!")
