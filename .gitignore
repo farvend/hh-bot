@@ -3,3 +3,4 @@ preferences.json
 words_blacklist.txt
 cookies
 *.bak
+__pycache__/
